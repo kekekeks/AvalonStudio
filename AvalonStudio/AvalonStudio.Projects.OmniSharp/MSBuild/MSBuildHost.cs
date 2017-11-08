@@ -31,7 +31,9 @@ namespace AvalonStudio.Projects.OmniSharp.MSBuild
             bool debugMode = IoC.Get<IShell>().DebugMode;
 
             outputLines = new List<string>();
-            errorLines = new List<string>();            
+            errorLines = new List<string>();
+
+            var serverStarted = new TaskCompletionSource<bool>();
             
             hostProcess = PlatformSupport.LaunchShellCommand("dotnet", $"\"{sdkPath}MSBuild.dll\" avalonstudio-intercept.csproj",
             (sender, e) =>
@@ -40,7 +42,14 @@ namespace AvalonStudio.Projects.OmniSharp.MSBuild
                 {
                     lock (outputLines)
                     {
-                        outputLines.Add(e.Data);
+                        if (e.Data == "AvalonStudio MSBuild Host Started:")
+                        {
+                            serverStarted.SetResult(true);
+                        }
+                        else
+                        {
+                            outputLines.Add(e.Data);
+                        }
                     }
 
                     if (debugMode)
@@ -67,9 +76,19 @@ namespace AvalonStudio.Projects.OmniSharp.MSBuild
                 }
             }, false, Platforms.Platform.ExecutionPath, false);
 
-            msBuildHostService = new Engine().CreateProxy<IMsBuildHostService>(new TcpClientTransport(IPAddress.Loopback, 9000));
+            hostProcess.Exited += (sender, e) =>
+            {
+                serverStarted.SetResult(false);
+            };
 
-            var res = await msBuildHostService.GetVersion();
+            if (await serverStarted.Task)
+            {
+                msBuildHostService = new Engine().CreateProxy<IMsBuildHostService>(new TcpClientTransport(IPAddress.Loopback, 9000));                
+            }
+            else
+            {
+                throw new Exception("AvalonStudio MSBuild Host failed to start or crashed.");
+            }
         }
 
         public async Task<(ProjectInfo info, List<string> projectReferences, string targetPath)> LoadProject(string solutionDirectory, string projectFile)
